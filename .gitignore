@@ -1,3 +1,6 @@
 *.c
 *.o
 *.txt
+example
+./pycparser/*
+./pycparserext/*

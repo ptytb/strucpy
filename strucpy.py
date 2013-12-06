@@ -1,15 +1,14 @@
 #!/usr/bin/python2.7
 
-from pycparser import parse_file, c_ast
-from pycparser import c_parser
+from pycparserext.ext_c_parser import GnuCParser
+from pycparser import parse_file
+from pycparser.c_parser import ParseError
 from pycparser.c_ast import *
 
 ast = None
-labelOrd = 0
-hook = {}
-def loadtypedefs():
-    global ast
-    ast = parse_file("example.c")
+hookDict = {}
+output = None
+header = None
 
 def gettype(NAME):
         class TypedeclVisitor(NodeVisitor):
@@ -25,7 +24,12 @@ def gettype(NAME):
         return td.found[0] if td.found else None
 
 def write_c(s):
-    print s
+    global output
+    output.write(s + "\n")
+
+def write_h(s):
+    global header
+    header.write(s + "\n")
 
 def askIsArray(FIELD):
     msg = "Is field \"{0}\" an array?".format(FIELD)
@@ -81,12 +85,12 @@ def fields(TYPE):
 def hooked(ATYPE, BTYPE):
     pass
 
-def hook(A, ATYPE, B, BTYPE):
+def hook(T, A, B):
     pass
 
 def struct_copy_rec(A, ATYPE, B, BTYPE):
     if hooked(ATYPE, BTYPE):
-        write_c(hook(A, ATYPE, B, BTYPE))
+        write_c(hook((ATYPE, BTYPE,), A, B))
         return
 
     while type(ATYPE) in (Typedef, TypeDecl):
@@ -134,19 +138,42 @@ def struct_copy_rec(A, ATYPE, B, BTYPE):
 ##                write_c("}")
 ##        else:
 
-def struct_copy(A, ATYPE, BTYPE):
-    write_c("{2} struct_copy({0} {1})\n{{"
-                .format(ATYPE, A, BTYPE))
-    write_c("{0} {1};".format(BTYPE, "X"))
-    struct_copy_rec(A, gettype(ATYPE), "X", gettype(BTYPE))
-    write_c("return({0});".format("X"))
-    write_c("}")
+def struct_copy_proto(A, ATYPE, BTYPE):
+	return "{2} struct_copy_{0}_{2}({0} {1})".format(ATYPE, A, BTYPE)
 
-loadtypedefs()
-hook[("char *", "char *")] = "strdup"
-struct_copy("a", "PA", "PA");
-file 
-#ast.show()
-#struct_copy("pqs", "WSAQUERYSET", "pqsw", "WSAQUERYSETW");
+def struct_copy(ATYPE, BTYPE):
+    write_c(struct_copy_proto("s", ATYPE, BTYPE))
+    write_c("{")
+    write_c("{0} {1};".format(BTYPE, "X"))
+    struct_copy_rec("s", gettype(ATYPE), "X", gettype(BTYPE))
+    write_c("return({0});".format("X"))
+    write_c("}\n\n")
+    write_h(struct_copy_proto("s", ATYPE, BTYPE) + ";")
+
+def processFiles(FILES):
+	global ast, output, header
+	output = file("strucpy.c", "w")
+	header = file("strucpy.h", "w")
+	write_c("#include \"strucpy.h\"")
+	write_c("#include <stdlib.h>")
+	write_c("#include <string.h>")
+
+	for f in FILES:
+		try:
+			gcp = GnuCParser()
+			ast = parse_file(f, parser=gcp)
+		except ParseError as e:
+			print "Parse error: " + e.message
+
+		write_h("#include \"" + f + "\"")
+		struct_copy("LPWSAQUERYSETA", "LPWSAQUERYSETA");
+		struct_copy("PA", "PA");
+
+	output.close()
+	header.close()
+
+
+processFiles(("example.h",))
+#processFiles(("/media/usb3/media/Src/wine/wine/include/ws2def.h",))
 
 
