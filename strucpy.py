@@ -11,6 +11,12 @@ hookDict = []
 output = None
 header = None
 gcp = GnuCParser()
+varId = 0
+
+def getVarId():
+    global varId
+    varId += 1
+    return "var%d" % varId
 
 def gettype(NAME):
         class TypedeclVisitor(NodeVisitor):
@@ -27,7 +33,7 @@ def gettype(NAME):
 
 def write_c(s):
     global output
-    output.write("\n".join(wrap(s, break_long_words=False)))
+    output.write("\n".join(wrap(s, break_long_words=False, replace_whitespace=False)))
     output.write("\n")
 
 def write_h(s):
@@ -132,13 +138,16 @@ def struct_copy_rec(A, ATYPE, B, BTYPE):
         ATYPE = ATYPE.type
 
     if type(ATYPE) is ArrayDecl:
-        size = 1
-        while type(ATYPE) is ArrayDecl:
-            size *= int(ATYPE.dim.value)
-            ATYPE = ATYPE.type
-        write_c("memcpy({0}, {1}, sizeof({2}));"
-                .format(A, B, size))
-
+        if isPodType(ATYPE):
+            write_c("memcpy({0}, {1}, sizeof({2}));".format(A, B, A))
+        else:
+            vid = getVarId()
+            write_c("{ int %s;" % vid)
+            write_c("for ({1} = 0; {1} < {0} ; ++{1})\n{{"
+                .format(ATYPE.dim.value, vid))
+            struct_copy_rec("(%s)[%s]" % (A, vid), ATYPE.type,
+                "(%s)[%s]" % (B, vid), ATYPE.type)
+            write_c("\n}\n}")
     elif isPodType(ATYPE):
         write_c("{0} = {1};".format(B, A));
     elif isPointer(ATYPE) and type(deref(ATYPE)) is TypeDecl and \
@@ -148,15 +157,15 @@ def struct_copy_rec(A, ATYPE, B, BTYPE):
         write_c("{0} = malloc(sizeof(*{0}));".format(B))
         ATYPE = deref(ATYPE).type
         for F in fields(ATYPE):
-            struct_copy_rec("{0}->{1}".format(A, F.name), F.type, \
-                            "{0}->{1}".format(B, F.name), F.type)
+            struct_copy_rec("({0})->{1}".format(A, F.name), F.type, \
+                            "({0})->{1}".format(B, F.name), F.type)
         write_c("}")
     elif isPointer(ATYPE):
         write_c("if (({0} = {1}) != NULL)\n{{".format(B, A))
         write_c("{0} = malloc(sizeof(*{0}));".format(B))
 
-        struct_copy_rec("(*{0})".format(A), deref(ATYPE),
-                        "(*{0})".format(B), deref(BTYPE))
+        struct_copy_rec("*{0}".format(A), deref(ATYPE),
+                        "*{0}".format(B), deref(BTYPE))
         write_c("}")
     elif type(ATYPE) is Struct:
         for F in fields(ATYPE):
@@ -198,6 +207,7 @@ def processFiles(FILES):
 	for f in FILES:
 		try:
 			ast = parse_file(f, parser=gcp)
+                        ast.show()
 		except ParseError as e:
 			print "Parse error: " + e.message
                         break
@@ -208,8 +218,9 @@ def processFiles(FILES):
                 #sethook("LPSTR", "LPSTR", "strdup")
 
 		write_h("#include \"" + f + "\"")
-		struct_copy("LPWSAQUERYSETA", "LPWSAQUERYSETA");
+	#	struct_copy("LPWSAQUERYSETA", "LPWSAQUERYSETA");
 		struct_copy("PA", "PA");
+	#	struct_copy("PG", "PG");
 
 	output.close()
 	header.close()
