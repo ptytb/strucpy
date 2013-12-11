@@ -1,6 +1,12 @@
 *.c
+*.h
 *.o
 *.txt
 example
-./pycparser/*
-./pycparserext/*
+pycparser/*
+pycparserext/*
+lextab.py
+yacctab.py
+strucpy.h
+Makefile
+*.swp
