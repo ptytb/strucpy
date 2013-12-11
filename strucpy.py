@@ -5,6 +5,7 @@ from pycparser import parse_file
 from pycparser.c_parser import ParseError
 from pycparser.c_ast import *
 from textwrap import *
+from itertools import izip
 
 ast = None
 hookDict = []
@@ -13,6 +14,14 @@ header = None
 gcp = GnuCParser()
 varId = 0
 
+allocFunc = "{0} = HeapAlloc(GetProcessHeap(), 0, sizeof(*{0}));"
+freeFunc = "HeapFree({0});"
+
+#allocFunc = "{0} = malloc(sizeof(*{0}));"
+#freeFunc = "free({0});"
+
+freeFuncLines = []
+
 def getVarId():
     global varId
     varId += 1
@@ -20,12 +29,12 @@ def getVarId():
 
 def gettype(NAME):
         class TypedeclVisitor(NodeVisitor):
-                def __init__(self):
-                    self.found = []
+            def __init__(self):
+                self.found = []
 
-                def visit_Typedef(self, node):
-                    if node.name == NAME:
-                        self.found.append(node)
+            def visit_Typedef(self, node):
+                if node.name == NAME:
+                    self.found.append(node)
 
         td = TypedeclVisitor()
         td.visit(ast)
@@ -102,11 +111,10 @@ def gethook(ATYPE, BTYPE, NAME):
     return None
 
 def ctype(TYPESTR):
-    global gcp
-    a = gettype(TYPESTR)
-    if not a:
-        a = gcp.parse(TYPESTR + " X;").ext[0].type
-    return a
+    try:
+        return gcp.parse(TYPESTR + " X;").ext[0].type
+    except:
+        return TypeDecl("", [], type=IdentifierType(names=[TYPESTR,]) )
 
 def isCtypeEq(ATYPE, BTYPE):
     t = type(ATYPE)
@@ -121,7 +129,13 @@ def isCtypeEq(ATYPE, BTYPE):
             return ATYPE.value == BTYPE.value
     return False 
 
+#TODO: generate functions for structures
 def struct_copy_rec(A, ATYPE, B, BTYPE):
+    def doFields(FMT):
+        for F, T in izip(fields(ATYPE), fields(BTYPE)):
+            struct_copy_rec(FMT.format(A, F.name), F.type, \
+                            FMT.format(B, T.name), T.type)
+
     h = gethook(ATYPE, BTYPE, A)
     if h:
         write_c("%s = %s;" % (B, h))
@@ -129,13 +143,17 @@ def struct_copy_rec(A, ATYPE, B, BTYPE):
 
     while type(ATYPE) in (Typedef, TypeDecl):
             ATYPE = ATYPE.type
+            BTYPE = BTYPE.type
 
     if type(ATYPE) is IdentifierType:
         E = gettype(ATYPE.names[0])
         ATYPE = E if E else ATYPE;
+        E = gettype(BTYPE.names[0])
+        BTYPE = E if E else BTYPE;
 
     while type(ATYPE) in (Typedef, TypeDecl):
         ATYPE = ATYPE.type
+        BTYPE = BTYPE.type
 
     if type(ATYPE) is ArrayDecl:
         if isPodType(ATYPE):
@@ -146,31 +164,31 @@ def struct_copy_rec(A, ATYPE, B, BTYPE):
             write_c("for ({1} = 0; {1} < {0} ; ++{1})\n{{"
                 .format(ATYPE.dim.value, vid))
             struct_copy_rec("(%s)[%s]" % (A, vid), ATYPE.type,
-                "(%s)[%s]" % (B, vid), ATYPE.type)
+                "(%s)[%s]" % (B, vid), BTYPE.type)
             write_c("\n}\n}")
     elif isPodType(ATYPE):
         write_c("{0} = {1};".format(B, A));
     elif isPointer(ATYPE) and type(deref(ATYPE)) is TypeDecl and \
         type(deref(ATYPE).type) is Struct and not isPodType(deref(ATYPE).type):
-#pointer to non-POD struct, use "->"
+        #pointer to non-POD struct, use "->"
         write_c("if (({0} = {1}) != NULL)\n{{".format(B, A))
-        write_c("{0} = malloc(sizeof(*{0}));".format(B))
+        write_c(allocFunc.format(B))
+        freeFuncLines.append(B)
         ATYPE = deref(ATYPE).type
-        for F in fields(ATYPE):
-            struct_copy_rec("({0})->{1}".format(A, F.name), F.type, \
-                            "({0})->{1}".format(B, F.name), F.type)
+        BTYPE = deref(BTYPE).type
+        doFields("({0})->{1}")
         write_c("}")
     elif isPointer(ATYPE):
         write_c("if (({0} = {1}) != NULL)\n{{".format(B, A))
-        write_c("{0} = malloc(sizeof(*{0}));".format(B))
+        write_c(allocFunc.format(B))
+#TODO: fix check NULL in remove func
+        freeFuncLines.append(B)
 
         struct_copy_rec("*{0}".format(A), deref(ATYPE),
                         "*{0}".format(B), deref(BTYPE))
         write_c("}")
     elif type(ATYPE) is Struct:
-        for F in fields(ATYPE):
-            struct_copy_rec("{0}.{1}".format(A, F.name), F.type, \
-                            "{0}.{1}".format(B, F.name), F.type)
+        doFields("{0}.{1}")
 
 #TODO: fix array support
 ##if askIsArray(A):
@@ -187,6 +205,9 @@ def struct_copy_rec(A, ATYPE, B, BTYPE):
 def struct_copy_proto(A, ATYPE, BTYPE):
 	return "{2} struct_copy_{0}_{2}({0} {1})".format(ATYPE, A, BTYPE)
 
+def struct_free_proto(A, TYPE):
+	return "void struct_free_{0}({0} {1})".format(TYPE, A)
+
 def struct_copy(ATYPE, BTYPE):
     write_c(struct_copy_proto("s", ATYPE, BTYPE))
     write_c("{")
@@ -195,6 +216,12 @@ def struct_copy(ATYPE, BTYPE):
     write_c("return({0});".format("X"))
     write_c("}\n\n")
     write_h(struct_copy_proto("s", ATYPE, BTYPE) + ";")
+    write_h(struct_free_proto("X", BTYPE) + ";")
+    
+    write_c(struct_free_proto("X", BTYPE) + "\n{\n")
+    for r in reversed(freeFuncLines):
+        write_c(freeFunc.format(r))
+    write_c("}\n\n")
 
 def processFiles(FILES):
 	global ast, output, header
@@ -207,19 +234,18 @@ def processFiles(FILES):
 	for f in FILES:
 		try:
 			ast = parse_file(f, parser=gcp)
-                        ast.show()
 		except ParseError as e:
 			print "Parse error: " + e.message
                         break
 
                 sethook("char *", "char *", "strdup")
-
+                sethook("LPSTR", "LPWSTR", "strdupAtoW")
                 #TODO: hook any types loaded in AST
-                #sethook("LPSTR", "LPSTR", "strdup")
 
 		write_h("#include \"" + f + "\"")
-	#	struct_copy("LPWSAQUERYSETA", "LPWSAQUERYSETA");
-		struct_copy("PA", "PA");
+		struct_copy("LPWSAQUERYSETA", "LPWSAQUERYSETW");
+
+	#	struct_copy("PA", "PA");
 	#	struct_copy("PG", "PG");
 
 	output.close()
