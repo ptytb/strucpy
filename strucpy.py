@@ -15,7 +15,7 @@ gcp = GnuCParser()
 varId = 0
 
 allocFunc = "{0} = HeapAlloc(GetProcessHeap(), 0, sizeof(*{0}));"
-freeFunc = "HeapFree({0});"
+freeFunc = "HeapFree(GetProcessHeap(), 0, {0});"
 
 #allocFunc = "{0} = malloc(sizeof(*{0}));"
 #freeFunc = "free({0});"
@@ -87,15 +87,10 @@ def isPodType(TYPE):
 
 def isPointer(TYPE):
     return type(TYPE) is PtrDecl 
-#               or hasattr(TYPE, "type") \
-#               and type(TYPE.type) is PtrDecl;
 
 def deref(TYPE):
-    """ Return subnode if pointer, grandchild if sub is pointer """
     if type(TYPE) is PtrDecl:
         return TYPE.type
-#    elif hasattr(TYPE, "type") and type(TYPE.type) is PtrDecl:
-#        return TYPE.type.type
     return None
 
 def fields(TYPE):
@@ -173,19 +168,29 @@ def struct_copy_rec(A, ATYPE, B, BTYPE):
         #pointer to non-POD struct, use "->"
         write_c("if (({0} = {1}) != NULL)\n{{".format(B, A))
         write_c(allocFunc.format(B))
-        freeFuncLines.append(B)
+
+        freeFuncLines.append("}")
+        freeFuncLines.append(freeFunc.format(B))
+
         ATYPE = deref(ATYPE).type
         BTYPE = deref(BTYPE).type
         doFields("({0})->{1}")
+
+        freeFuncLines.append("if (%s != NULL)\n{" % B)
+        
         write_c("}")
     elif isPointer(ATYPE):
         write_c("if (({0} = {1}) != NULL)\n{{".format(B, A))
         write_c(allocFunc.format(B))
-#TODO: fix check NULL in remove func
-        freeFuncLines.append(B)
+
+        freeFuncLines.append("}")
+        freeFuncLines.append(freeFunc.format(B))
 
         struct_copy_rec("*{0}".format(A), deref(ATYPE),
                         "*{0}".format(B), deref(BTYPE))
+        
+        freeFuncLines.append("if (%s != NULL)\n{" % B)
+
         write_c("}")
     elif type(ATYPE) is Struct:
         doFields("{0}.{1}")
@@ -202,25 +207,33 @@ def struct_copy_rec(A, ATYPE, B, BTYPE):
 ##                write_c("}")
 ##        else:
 
-def struct_copy_proto(A, ATYPE, BTYPE):
-	return "{2} struct_copy_{0}_{2}({0} {1})".format(ATYPE, A, BTYPE)
+def struct_copy_proto(A, ATYPE, BTYPE, DUP):
+    return "{2} struct_dup_{0}_{2}({0} {1})".format(ATYPE, A, BTYPE) if DUP \
+    else "void struct_copy_{0}_{2}({0} {1}, {2} *X)".format(ATYPE, A, BTYPE)
 
 def struct_free_proto(A, TYPE):
 	return "void struct_free_{0}({0} {1})".format(TYPE, A)
 
-def struct_copy(ATYPE, BTYPE):
-    write_c(struct_copy_proto("s", ATYPE, BTYPE))
+def struct_copy(ATYPE, BTYPE, DUP=False):
+    write_c(struct_copy_proto("s", ATYPE, BTYPE, DUP))
     write_c("{")
-    write_c("{0} {1};".format(BTYPE, "X"))
-    struct_copy_rec("s", gettype(ATYPE), "X", gettype(BTYPE))
-    write_c("return({0});".format("X"))
+    if DUP:
+        X = "X"
+        write_c("{0} {1};".format(BTYPE, X)) 
+        struct_copy_rec("s", gettype(ATYPE), X, gettype(BTYPE))
+    else:
+        X = "*X"
+        struct_copy_rec("s", gettype(ATYPE), X, gettype(BTYPE))
+
+    if DUP:
+        write_c("return({0});".format(X))
     write_c("}\n\n")
-    write_h(struct_copy_proto("s", ATYPE, BTYPE) + ";")
-    write_h(struct_free_proto("X", BTYPE) + ";")
+    write_h(struct_copy_proto("s", ATYPE, BTYPE, DUP) + ";")
+    write_h(struct_free_proto(X, BTYPE) + ";")
     
-    write_c(struct_free_proto("X", BTYPE) + "\n{\n")
+    write_c(struct_free_proto(X, BTYPE) + "\n{\n")
     for r in reversed(freeFuncLines):
-        write_c(freeFunc.format(r))
+        write_c(r)
     write_c("}\n\n")
 
 def processFiles(FILES):
@@ -238,25 +251,19 @@ def processFiles(FILES):
 			print "Parse error: " + e.message
                         break
 
-                sethook("char *", "char *", "strdup")
-                sethook("LPSTR", "LPWSTR", "strdupAtoW")
                 #TODO: hook any types loaded in AST
 
 		write_h("#include \"" + f + "\"")
-		struct_copy("LPWSAQUERYSETA", "LPWSAQUERYSETW");
 
-	#	struct_copy("PA", "PA");
-	#	struct_copy("PG", "PG");
+		struct_copy("LPWSAQUERYSETA", "LPWSAQUERYSETW", True);
+		struct_copy("LPWSAQUERYSETW", "LPWSAQUERYSETA");
 
 	output.close()
 	header.close()
 
+sethook("char *", "char *", "strdup")
+sethook("LPSTR", "LPWSTR", "strdupAtoW")
+sethook("LPWSTR", "LPSTR", "strdupWtoA")
+# You need to copy data types manually to headers
 processFiles(("example.h",))
-
-#a = ctype("const int *")
-#b = ctype("int *")
-#print a == b
-#print isCtypeEq(a, b)
-
-#processFiles(("/media/usb3/media/Src/wine/wine/include/ws2def.h",))
 
