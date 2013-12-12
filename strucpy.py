@@ -235,6 +235,7 @@ def struct_copy(ATYPE, BTYPE, DUP=False):
     for r in reversed(freeFuncLines):
         write_c(r)
     write_c("}\n\n")
+    del freeFuncLines[:]
 
 def processFiles(FILES):
 	global ast, output, header
